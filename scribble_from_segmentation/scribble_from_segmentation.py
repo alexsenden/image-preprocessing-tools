@@ -16,6 +16,8 @@ IMAGE_FILE_EXTENSIONS = (
 )
 
 BORDER_PADDING = 200
+KERNEL_SIZE = 11
+DILATION_ITERATIONS = 5
 
 
 def parse_args():
@@ -60,19 +62,48 @@ def generate_comparison(image1, image2):
     return blue_arr + red_arr
 
 
+def get_image_paths(input_dir):
+    images = [
+        file for file in os.listdir(input_dir) if file.endswith(IMAGE_FILE_EXTENSIONS)
+    ]
+
+    # Ensure at least one image exists
+    if len(images) == 0:
+        raise Exception(f"ERROR: No files discovered in input directory {input_dir}")
+
+    return images
+
+
+def generate_scribble_for_boolean(boolean_image):
+    ellipse_kernel = cv2.getStructuringElement(
+        cv2.MORPH_ELLIPSE, (KERNEL_SIZE, KERNEL_SIZE)
+    )
+    row_kernel = np.ones((KERNEL_SIZE, 3), dtype=np.uint8)
+    thin_row_kernel = np.ones((7, 1), dtype=np.uint8)
+
+    # Dilate mask to morph shapes together, produces less nubs in skeleton
+    dilated = cv2.dilate(boolean_image, row_kernel, iterations=DILATION_ITERATIONS)
+    skeleton = skeletonize(dilated).astype(np.uint8)
+
+    # Remove some extra nubs via repeated opening
+    denubbed = cv2.dilate(skeleton, ellipse_kernel, iterations=2)
+    denubbed = cv2.morphologyEx(denubbed, cv2.MORPH_OPEN, row_kernel, iterations=4)
+    regrown = cv2.dilate(denubbed, ellipse_kernel, iterations=1)
+
+    # Contract vertically, since row kernel overexpands vertically
+    regrown_contracted = cv2.erode(regrown, thin_row_kernel, iterations=8)
+
+    # Reskeletonize and dilate to smoothen and unify line width
+    second_skeleton = skeletonize(regrown_contracted).astype(np.uint8)
+    return cv2.dilate(second_skeleton, ellipse_kernel, iterations=1)
+
+
 def main():
     args = parse_args()
 
-    images = [
-        file
-        for file in os.listdir(args.input_dir)
-        if file.endswith(IMAGE_FILE_EXTENSIONS)
-    ]
-    if len(images) == 0:
-        print(f"ERROR: No files discovered in input directory {args.input_dir}")
-        return
-
+    images = get_image_paths()
     os.makedirs(args.output_dir, exist_ok=True)
+
     for image_file_name in images:
         image_file_path = os.path.join(args.input_dir, image_file_name)
         print(f"INFO: Processing image {image_file_path}")
@@ -80,6 +111,7 @@ def main():
         pil_image = Image.open(image_file_path)
         segmentation_classes = discover_segmentation_classes(pil_image)
 
+        # Pad image to allow kernels to operate "offscreen"
         np_image = np.asarray(pil_image)
         np_image = np.pad(
             np_image,
@@ -107,38 +139,17 @@ def main():
                 )
                 continue
 
-            kernel_size = 11
-            dilation_iterations = 5
+            # Generate scribble
+            class_scribble = generate_scribble_for_boolean(boolean_image)
 
-            ellipse_kernel = cv2.getStructuringElement(
-                cv2.MORPH_ELLIPSE, (kernel_size, kernel_size)
-            )
-
-            row_kernel = np.ones((kernel_size, 3), dtype=np.uint8)
-            thin_row_kernel = np.ones((7, 1), dtype=np.uint8)
-            dilated = cv2.dilate(
-                boolean_image, row_kernel, iterations=dilation_iterations
-            )
-
-            skeleton = skeletonize(dilated).astype(np.uint8)
-
-            denubbed = cv2.dilate(skeleton, ellipse_kernel, iterations=2)
-            denubbed = cv2.morphologyEx(
-                denubbed, cv2.MORPH_OPEN, row_kernel, iterations=4
-            )
-
-            regrown = cv2.dilate(denubbed, ellipse_kernel, iterations=1)
-            regrown_contracted = cv2.erode(regrown, thin_row_kernel, iterations=8)
-
-            skele2 = skeletonize(regrown_contracted).astype(np.uint8)
-            regrown2 = cv2.dilate(skele2, ellipse_kernel, iterations=1)
-
+            # Add scribble to output map
             set_colour(
                 colour_image=scribble_annotation,
-                binary_image=regrown2.astype(bool),
+                binary_image=class_scribble.astype(bool),
                 colour=np.asarray(segmentation_class[:3], dtype=np.uint8),
             )
 
+        # Save resulting image
         Image.fromarray(
             scribble_annotation[
                 BORDER_PADDING:-BORDER_PADDING, BORDER_PADDING:-BORDER_PADDING
