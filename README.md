@@ -12,6 +12,14 @@ Copies images to the caption directory if there is a caption for the image. Usef
 python copy_if_caption_exists.py --image_dir=<image_dir> --caption_dir=<caption_dir>
 ```
 
+#### scribble_from_segmentation
+
+Creates scribble annotations from a semantic segmentation annotation. Can use tiled or untiled images.
+
+```
+python scribble_from_segmentation.py --input_dir=<input_dir> --output_dir=<output_dir>
+```
+
 #### tile_image
 
 Basic tool for tiling large image datasets.
