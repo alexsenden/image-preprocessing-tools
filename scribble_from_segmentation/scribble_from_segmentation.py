@@ -1,10 +1,11 @@
 import argparse
-import os
-import numpy as np
 import cv2
+import math
+import numpy as np
+import os
 
 from PIL import Image
-from skimage.morphology import skeletonize
+from skimage import measure, morphology
 
 IMAGE_FILE_EXTENSIONS = (
     ".png",
@@ -17,7 +18,16 @@ IMAGE_FILE_EXTENSIONS = (
 
 BORDER_PADDING = 200
 KERNEL_SIZE = 11
+SMALL_KERNEL_SIZE = 7
 DILATION_ITERATIONS = 5
+IS_ROW_THRESHOLD = 0.4
+
+ELLIPSE_KERNEL = cv2.getStructuringElement(
+    cv2.MORPH_ELLIPSE, (KERNEL_SIZE, KERNEL_SIZE)
+)
+SMALL_ELLIPSE_KERNEL = cv2.getStructuringElement(
+    cv2.MORPH_ELLIPSE, (SMALL_KERNEL_SIZE, SMALL_KERNEL_SIZE)
+)
 
 
 def parse_args():
@@ -39,7 +49,13 @@ def parse_args():
     return parser.parse_args()
 
 
+def save_image(image, path):
+    Image.fromarray(image.astype(np.uint8)).save(path)
+
+
 def discover_segmentation_classes(image):
+
+    print(list(set(image.getdata())))
     return [list(colour) for colour in list(set(image.getdata()))]
 
 
@@ -74,41 +90,110 @@ def get_image_paths(input_dir):
     return images
 
 
+def get_row_direction(boolean_image):
+    # Preprocess: dilate image to merge nearby objects
+    dilated = cv2.dilate(np.transpose(boolean_image), ELLIPSE_KERNEL, iterations=2)
+
+    # Get largest object from dilated image
+    labeled = measure.label(dilated, connectivity=2)
+    regions = measure.regionprops(labeled)
+    largest_region = max(regions, key=lambda r: r.area)
+
+    # Determine whether or not the object is likely an actual row
+    is_row = (
+        largest_region.axis_minor_length / largest_region.axis_major_length
+        < IS_ROW_THRESHOLD
+    ) or True
+
+    # Align to axis if near one
+    theta = largest_region.orientation
+    if -0.1 < theta and theta < 0.1:
+        theta = 0
+    elif theta < -1.5 or theta > 1.5:
+        theta = math.pi / 2.0
+
+    return theta, is_row
+
+
+def oriented_line_kernel(theta, size, thickness):
+    kernel = np.zeros((size, size), dtype=np.uint8)
+
+    # Center point (size should always be odd)
+    center = (size - 1) // 2
+
+    # Direction vector
+    dx = np.round(np.cos(theta), 3)
+    dy = np.round(np.sin(theta), 3)
+
+    # Large enough line endpoints in both directions
+    x0 = int(center - dx * size)
+    y0 = int(center - dy * size)
+    x1 = int(center + dx * size)
+    y1 = int(center + dy * size)
+
+    print(f"dx: {dx}, dy: {dy}")
+    print(f"x0: {x0}, y0: {y0}, x1: {x1}, y1: {y1}")
+
+    # Draw line on kernel
+    cv2.line(kernel, (x0, y0), (x1, y1), 1, thickness=thickness)
+
+    print(theta)
+    print(kernel)
+
+    return kernel
+
+
+def get_convolutional_kernels(image):
+    row_direction_theta, is_row = get_row_direction(
+        image[BORDER_PADDING:-BORDER_PADDING, BORDER_PADDING:-BORDER_PADDING]
+    )
+
+    if is_row:
+        print("INFO: Using row kernel")
+        thin_kernel = oriented_line_kernel(row_direction_theta, SMALL_KERNEL_SIZE, 1)
+        thick_kernel = oriented_line_kernel(row_direction_theta, KERNEL_SIZE, 2)
+    else:
+        print("INFO: Using ellipse kernel")
+        thin_kernel = SMALL_ELLIPSE_KERNEL
+        thick_kernel = ELLIPSE_KERNEL
+
+    return thin_kernel, thick_kernel
+
+
 def generate_scribble_for_boolean(boolean_image):
-    ellipse_kernel = cv2.getStructuringElement(
+    ELLIPSE_KERNEL = cv2.getStructuringElement(
         cv2.MORPH_ELLIPSE, (KERNEL_SIZE, KERNEL_SIZE)
     )
-    row_kernel = np.ones((KERNEL_SIZE, 3), dtype=np.uint8)
-    thin_row_kernel = np.ones((7, 1), dtype=np.uint8)
+    thin_row_kernel, row_kernel = get_convolutional_kernels(boolean_image)
 
     # Dilate mask to morph shapes together, produces less nubs in skeleton
     dilated = cv2.dilate(boolean_image, row_kernel, iterations=DILATION_ITERATIONS)
-    skeleton = skeletonize(dilated).astype(np.uint8)
+    skeleton = morphology.skeletonize(dilated).astype(np.uint8)
 
     # Remove some extra nubs via repeated opening
-    denubbed = cv2.dilate(skeleton, ellipse_kernel, iterations=2)
+    denubbed = cv2.dilate(skeleton, ELLIPSE_KERNEL, iterations=2)
     denubbed = cv2.morphologyEx(denubbed, cv2.MORPH_OPEN, row_kernel, iterations=4)
-    regrown = cv2.dilate(denubbed, ellipse_kernel, iterations=1)
+    regrown = cv2.dilate(denubbed, ELLIPSE_KERNEL, iterations=1)
 
     # Contract vertically, since row kernel overexpands vertically
     regrown_contracted = cv2.erode(regrown, thin_row_kernel, iterations=8)
 
-    # Reskeletonize and dilate to smoothen and unify line width
-    second_skeleton = skeletonize(regrown_contracted).astype(np.uint8)
-    return cv2.dilate(second_skeleton, ellipse_kernel, iterations=1)
+    # Remorphology.skeletonize and dilate to smoothen and unify line width
+    second_skeleton = morphology.skeletonize(regrown_contracted).astype(np.uint8)
+    return cv2.dilate(second_skeleton, ELLIPSE_KERNEL, iterations=1)
 
 
 def main():
     args = parse_args()
 
-    images = get_image_paths()
+    images = get_image_paths(args.input_dir)
     os.makedirs(args.output_dir, exist_ok=True)
 
     for image_file_name in images:
         image_file_path = os.path.join(args.input_dir, image_file_name)
         print(f"INFO: Processing image {image_file_path}")
 
-        pil_image = Image.open(image_file_path)
+        pil_image = Image.open(image_file_path).convert("RGB")
         segmentation_classes = discover_segmentation_classes(pil_image)
 
         # Pad image to allow kernels to operate "offscreen"
@@ -128,6 +213,7 @@ def main():
         )
 
         for segmentation_class in segmentation_classes:
+            print(segmentation_class)
             boolean_image = np.all(np_image == segmentation_class, axis=-1).astype(
                 np.uint8
             )
@@ -150,15 +236,14 @@ def main():
             )
 
         # Save resulting image
-        Image.fromarray(
+        save_image(
             scribble_annotation[
                 BORDER_PADDING:-BORDER_PADDING, BORDER_PADDING:-BORDER_PADDING
-            ]
-        ).save(
+            ],
             os.path.join(
                 args.output_dir,
                 f"{os.path.splitext(image_file_name)[0]}_scribble.png",
-            )
+            ),
         )
 
 
