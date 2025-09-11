@@ -20,7 +20,7 @@ BORDER_PADDING = 200
 KERNEL_SIZE = 11
 SMALL_KERNEL_SIZE = 7
 DILATION_ITERATIONS = 5
-IS_ROW_THRESHOLD = 0.4
+BACKGROUND_THRESHOLD = 0.5
 
 ELLIPSE_KERNEL = cv2.getStructuringElement(
     cv2.MORPH_ELLIPSE, (KERNEL_SIZE, KERNEL_SIZE)
@@ -54,8 +54,6 @@ def save_image(image, path):
 
 
 def discover_segmentation_classes(image):
-
-    print(list(set(image.getdata())))
     return [list(colour) for colour in list(set(image.getdata()))]
 
 
@@ -99,12 +97,6 @@ def get_row_direction(boolean_image):
     regions = measure.regionprops(labeled)
     largest_region = max(regions, key=lambda r: r.area)
 
-    # Determine whether or not the object is likely an actual row
-    is_row = (
-        largest_region.axis_minor_length / largest_region.axis_major_length
-        < IS_ROW_THRESHOLD
-    ) or True
-
     # Align to axis if near one
     theta = largest_region.orientation
     if -0.1 < theta and theta < 0.1:
@@ -112,7 +104,7 @@ def get_row_direction(boolean_image):
     elif theta < -1.5 or theta > 1.5:
         theta = math.pi / 2.0
 
-    return theta, is_row
+    return theta
 
 
 def oriented_line_kernel(theta, size, thickness):
@@ -131,31 +123,19 @@ def oriented_line_kernel(theta, size, thickness):
     x1 = int(center + dx * size)
     y1 = int(center + dy * size)
 
-    print(f"dx: {dx}, dy: {dy}")
-    print(f"x0: {x0}, y0: {y0}, x1: {x1}, y1: {y1}")
-
     # Draw line on kernel
     cv2.line(kernel, (x0, y0), (x1, y1), 1, thickness=thickness)
-
-    print(theta)
-    print(kernel)
 
     return kernel
 
 
 def get_convolutional_kernels(image):
-    row_direction_theta, is_row = get_row_direction(
+    row_direction_theta = get_row_direction(
         image[BORDER_PADDING:-BORDER_PADDING, BORDER_PADDING:-BORDER_PADDING]
     )
 
-    if is_row:
-        print("INFO: Using row kernel")
-        thin_kernel = oriented_line_kernel(row_direction_theta, SMALL_KERNEL_SIZE, 1)
-        thick_kernel = oriented_line_kernel(row_direction_theta, KERNEL_SIZE, 2)
-    else:
-        print("INFO: Using ellipse kernel")
-        thin_kernel = SMALL_ELLIPSE_KERNEL
-        thick_kernel = ELLIPSE_KERNEL
+    thin_kernel = oriented_line_kernel(row_direction_theta, SMALL_KERNEL_SIZE, 1)
+    thick_kernel = oriented_line_kernel(row_direction_theta, KERNEL_SIZE, 2)
 
     return thin_kernel, thick_kernel
 
@@ -213,13 +193,12 @@ def main():
         )
 
         for segmentation_class in segmentation_classes:
-            print(segmentation_class)
             boolean_image = np.all(np_image == segmentation_class, axis=-1).astype(
                 np.uint8
             )
 
             # Check if class is background
-            if np.sum(boolean_image) / boolean_image.size > 0.5:
+            if np.sum(boolean_image) / boolean_image.size > BACKGROUND_THRESHOLD:
                 print(
                     f"INFO: Class {segmentation_class} detected as background class. Skipping."
                 )
