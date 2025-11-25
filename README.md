@@ -12,6 +12,14 @@ Copies images to the caption directory if there is a caption for the image. Usef
 python copy_if_caption_exists.py --image_dir=<image_dir> --caption_dir=<caption_dir>
 ```
 
+#### recolour_segmentation
+
+A simple tool for recolouring segmentation masks.
+
+```
+python recolour_segmentation.py --input_dir=<input_dir> [--output_dir=<output_dir> || --inplace=true] [--colour_map=r1,g1,b1:r2,g2,b2;r3,g3,b3:r4,g4,b4]
+```
+
 #### scribble_from_segmentation
 
 Creates scribble annotations from a semantic segmentation annotation. Can use tiled or untiled images.
