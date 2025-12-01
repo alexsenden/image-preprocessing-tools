@@ -12,6 +12,14 @@ Copies images to the caption directory if there is a caption for the image. Usef
 python copy_if_caption_exists.py --image_dir=<image_dir> --caption_dir=<caption_dir>
 ```
 
+#### clean_noisy_segmentation
+
+Cleans noisy segmentation masks by assigning each pixel to the nearest colour in a provided palette.
+
+```
+python clean_noisy_segmentation.py --input_dir=<input_dir> [--output_dir=<output_dir> || --inplace] (--colours=<colours> || --colours_file=<colours_file>) [--name_filter=<substring>]
+```
+
 #### recolour_segmentation
 
 A simple tool for recolouring segmentation masks.
